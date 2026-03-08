@@ -1,0 +1,22 @@
+{
+    "min_edge_threshold_bps": 0,
+    "taker_fee_bps": 100,
+    "summary_interval_seconds": 60,
+    "log_file": "logs/arb_log.csv",
+    "ping_interval_seconds": 15,
+    "reconnect_max_delay_seconds": 30,
+    "contracts": [
+        {
+            "name": "FED-DECREASE-50BPS-MAR26",
+            "condition_id": "0x0000",
+            "token_id_yes": "46553455570564517989191023458705371521436514261892866503067981558938998232024",
+            "token_id_no": "48458075019957098166340475646923389496510427632693703161736892736757168972646"
+        },
+        {
+            "name": "FED-INCREASE-25BPS-MAR26",
+            "condition_id": "0x0000",
+            "token_id_yes": "54073086346734626735797775941991553522163760164405051969883391401961188364109",
+            "token_id_no": "111080671036126109659854287535401661966194360665829017654832975124868412594547"
+        }
+    ]
+}

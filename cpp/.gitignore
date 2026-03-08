@@ -1,0 +1,8 @@
+build/
+logs/
+deps/simdjson.h
+deps/simdjson.cpp
+*.o
+*.a
+core
+*.core
