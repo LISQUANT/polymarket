@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(polymarket_arb_detector LANGUAGES CXX)
 
+include(CheckIPOSupported)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -39,6 +41,7 @@ target_compile_options(simdjson PRIVATE -O3 -march=native -DNDEBUG)
 # Main executable
 add_executable(arb_detector
     src/main.cpp
+    src/runtime.cpp
     src/websocket.cpp
     src/parser.cpp
     src/orderbook.cpp
@@ -60,6 +63,13 @@ target_link_libraries(arb_detector
 # If system Boost has a library (some distros), link it
 if(Boost_FOUND AND Boost_LIBRARIES)
     target_link_libraries(arb_detector ${Boost_LIBRARIES})
+endif()
+
+check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)
+if(IPO_SUPPORTED)
+    set_property(TARGET simdjson arb_detector PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+else()
+    message(STATUS "IPO/LTO not enabled: ${IPO_ERROR}")
 endif()
 
 # Don't accidentally pull in anaconda runtime libs

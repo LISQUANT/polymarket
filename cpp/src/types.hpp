@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <chrono>
 
@@ -13,6 +15,7 @@ using Size = uint32_t;
 using NanoTime = uint64_t;
 
 static constexpr Price PRICE_ONE = 1000;  // $1.00
+static constexpr size_t PRICE_LEVEL_COUNT = PRICE_ONE + 1;
 static constexpr int MAX_LEVELS = 50;
 
 struct PriceLevel {
@@ -23,12 +26,15 @@ struct PriceLevel {
 struct alignas(64) Orderbook {
     PriceLevel bids[MAX_LEVELS];
     PriceLevel asks[MAX_LEVELS];
+    Size       bid_size_by_price[PRICE_LEVEL_COUNT] = {};
+    Size       ask_size_by_price[PRICE_LEVEL_COUNT] = {};
     uint8_t    bid_count     = 0;
     uint8_t    ask_count     = 0;
     Price      best_bid      = 0;
     Price      best_ask      = 0;
     Size       best_bid_size = 0;
     Size       best_ask_size = 0;
+    bool       has_snapshot  = false;
     uint64_t   timestamp     = 0;     // exchange timestamp
     NanoTime   local_update_ns = 0;   // our clock when processed
 };
@@ -48,8 +54,8 @@ struct ArbOpportunity {
     NanoTime    t2_book_updated_ns = 0;
     NanoTime    t3_arb_checked_ns  = 0;
     NanoTime    t4_logged_ns       = 0;
-    std::string contract_name;
-    std::string arb_type;  // "BUY_BOTH" or "SELL_BOTH"
+    std::string_view contract_name;
+    std::string_view arb_type;  // "BUY_BOTH" or "SELL_BOTH"
     Price       ask_yes    = 0;
     Price       ask_no     = 0;
     Price       bid_yes    = 0;
@@ -70,6 +76,21 @@ struct Config {
     std::string log_file = "logs/arb_log.csv";
     int         ping_interval_seconds = 15;
     int         reconnect_max_delay_seconds = 30;
+    bool        custom_feature_enabled = true;
+    bool        initial_dump = true;
+    bool        metrics_enabled = true;
+    bool        hot_path_logging = false;
+    bool        flush_csv_each_write = false;
+    int         pin_thread_cpu = -1;
+    int         receiver_cpu = 2;
+    int         parser_cpu = 3;
+    int         logger_cpu = 5;
+    bool        lock_memory = false;
+    size_t      prefault_stack_kb = 64;
+    int         realtime_priority = 0;
+    int         receiver_priority = 0;
+    int         parser_priority = 0;
+    int         logger_priority = 0;
     std::vector<Contract> contracts;
 };
 

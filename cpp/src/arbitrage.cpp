@@ -5,13 +5,18 @@
 ArbitrageDetector::ArbitrageDetector(const Config& config) : config_(config) {}
 
 bool ArbitrageDetector::check(const Contract& contract, NanoTime t2_book_updated) {
+    static constexpr std::string_view BUY_BOTH = "BUY_BOTH";
+    static constexpr std::string_view SELL_BOTH = "SELL_BOTH";
+
     total_checks_++;
 
     const auto& yes = contract.book_yes;
     const auto& no  = contract.book_no;
 
     if (yes.best_ask == 0 || no.best_ask == 0 ||
-        yes.best_bid == 0 || no.best_bid == 0) {
+        yes.best_bid == 0 || no.best_bid == 0 ||
+        yes.best_ask_size == 0 || no.best_ask_size == 0 ||
+        yes.best_bid_size == 0 || no.best_bid_size == 0) {
         return false;
     }
 
@@ -37,7 +42,7 @@ bool ArbitrageDetector::check(const Contract& contract, NanoTime t2_book_updated
             last_opp_.t2_book_updated_ns = t2_book_updated;
             last_opp_.t3_arb_checked_ns = now_ns();
             last_opp_.contract_name = contract.asset_name;
-            last_opp_.arb_type = "BUY_BOTH";
+            last_opp_.arb_type = BUY_BOTH;
             last_opp_.ask_yes = yes.best_ask;
             last_opp_.ask_no = no.best_ask;
             last_opp_.bid_yes = yes.best_bid;
@@ -50,14 +55,16 @@ bool ArbitrageDetector::check(const Contract& contract, NanoTime t2_book_updated
             cumulative_pnl_ += last_opp_.theoretical_pnl;
             cumulative_vol_ += (double)size;
 
-            printf("[ARB] BUY_BOTH  | cost=%u | raw_edge=%d fee=%d net_edge=%d (%.1f%%) | size=$%u | pnl=$%.2f | cum_pnl=$%.2f\n",
-                   cost, raw_edge, fee_cost, net_edge, net_edge / 10.0, size,
-                   last_opp_.theoretical_pnl, cumulative_pnl_);
+            if (config_.hot_path_logging) {
+                printf("[ARB] BUY_BOTH  | cost=%u | raw_edge=%d fee=%d net_edge=%d (%.1f%%) | size=$%u | pnl=$%.2f | cum_pnl=$%.2f\n",
+                       cost, raw_edge, fee_cost, net_edge, net_edge / 10.0, size,
+                       last_opp_.theoretical_pnl, cumulative_pnl_);
+            }
 
             total_opps_++;
             buy_both_++;
             found = true;
-        } else {
+        } else if (config_.hot_path_logging) {
             printf("[ARB CHECK] BUY_BOTH  | cost=%u | raw_edge=%d net=%d | NO_ARB\n",
                    cost, raw_edge, net_edge);
         }
@@ -76,7 +83,7 @@ bool ArbitrageDetector::check(const Contract& contract, NanoTime t2_book_updated
             last_opp_.t2_book_updated_ns = t2_book_updated;
             last_opp_.t3_arb_checked_ns = now_ns();
             last_opp_.contract_name = contract.asset_name;
-            last_opp_.arb_type = "SELL_BOTH";
+            last_opp_.arb_type = SELL_BOTH;
             last_opp_.ask_yes = yes.best_ask;
             last_opp_.ask_no = no.best_ask;
             last_opp_.bid_yes = yes.best_bid;
@@ -89,14 +96,16 @@ bool ArbitrageDetector::check(const Contract& contract, NanoTime t2_book_updated
             cumulative_pnl_ += last_opp_.theoretical_pnl;
             cumulative_vol_ += (double)size;
 
-            printf("[ARB] SELL_BOTH | proceeds=%u | raw_edge=%d fee=%d net_edge=%d (%.1f%%) | size=$%u | pnl=$%.2f | cum_pnl=$%.2f\n",
-                   proceeds, raw_edge, fee_cost, net_edge, net_edge / 10.0, size,
-                   last_opp_.theoretical_pnl, cumulative_pnl_);
+            if (config_.hot_path_logging) {
+                printf("[ARB] SELL_BOTH | proceeds=%u | raw_edge=%d fee=%d net_edge=%d (%.1f%%) | size=$%u | pnl=$%.2f | cum_pnl=$%.2f\n",
+                       proceeds, raw_edge, fee_cost, net_edge, net_edge / 10.0, size,
+                       last_opp_.theoretical_pnl, cumulative_pnl_);
+            }
 
             total_opps_++;
             sell_both_++;
             found = true;
-        } else {
+        } else if (config_.hot_path_logging) {
             printf("[ARB CHECK] SELL_BOTH | proceeds=%u | raw_edge=%d net=%d | NO_ARB\n",
                    proceeds, raw_edge, net_edge);
         }

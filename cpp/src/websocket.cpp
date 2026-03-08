@@ -10,6 +10,7 @@ WebSocketClient::WebSocketClient(const Config& config)
 {
     ssl_ctx_.set_default_verify_paths();
     ssl_ctx_.set_verify_mode(ssl::verify_peer);
+    buffer_.reserve(256 * 1024);
 }
 
 WebSocketClient::~WebSocketClient() {
@@ -55,6 +56,7 @@ bool WebSocketClient::do_connect() {
         // TCP connect (beast::tcp_stream uses its own connect method)
         NanoTime t_tcp_start = now_ns();
         beast::get_lowest_layer(*ws_).connect(results);
+        beast::get_lowest_layer(*ws_).socket().set_option(tcp::no_delay(true));
         NanoTime t_tcp_done = now_ns();
         double tcp_ms = (t_tcp_done - t_tcp_start) / 1e6;
         printf("[PERF] TCP connect: %.2fms\n", tcp_ms);
@@ -128,7 +130,11 @@ bool WebSocketClient::do_subscribe() {
                 first = false;
             }
         }
-        sub << R"(],"type":"market"})";
+        sub << R"(],"type":"market","initial_dump":)"
+            << (config_.initial_dump ? "true" : "false")
+            << R"(,"custom_feature_enabled":)"
+            << (config_.custom_feature_enabled ? "true" : "false")
+            << "}";
 
         std::string msg = sub.str();
         ws_->write(net::buffer(msg));
@@ -152,11 +158,22 @@ bool WebSocketClient::do_subscribe() {
 void WebSocketClient::run(MessageCallback on_message) {
     running_ = true;
     auto last_ping = std::chrono::steady_clock::now();
-    auto last_msg  = std::chrono::steady_clock::now();
+    auto last_msg = std::chrono::steady_clock::now();
 
-    while (running_ && connected_) {
+    while (running_) {
+        if (!connected_) {
+            std::cerr << "[RECONNECT] Attempting reconnection...\n";
+            if (!connect()) {
+                if (running_) {
+                    std::cerr << "[RECONNECT] Stopping after failed reconnect\n";
+                }
+                break;
+            }
+            last_ping = std::chrono::steady_clock::now();
+            last_msg = last_ping;
+        }
+
         try {
-            // Set a timeout so we can send pings
             beast::get_lowest_layer(*ws_).expires_after(std::chrono::seconds(5));
 
             buffer_.clear();
@@ -167,18 +184,18 @@ void WebSocketClient::run(MessageCallback on_message) {
 
             if (ec) {
                 if (ec == beast::error::timeout) {
-                    // No message received, check if we need to ping or reconnect
                     auto now = std::chrono::steady_clock::now();
-                    auto since_msg = std::chrono::duration_cast<std::chrono::seconds>(now - last_msg).count();
+                    auto since_msg =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - last_msg).count();
 
                     if (since_msg > 30) {
                         std::cerr << "[STALE] No message for " << since_msg << "s, reconnecting...\n";
                         connected_ = false;
-                        break;
+                        continue;
                     }
 
-                    // Send ping
-                    auto since_ping = std::chrono::duration_cast<std::chrono::seconds>(now - last_ping).count();
+                    auto since_ping =
+                        std::chrono::duration_cast<std::chrono::seconds>(now - last_ping).count();
                     if (since_ping >= config_.ping_interval_seconds) {
                         send_ping();
                         last_ping = now;
@@ -192,12 +209,11 @@ void WebSocketClient::run(MessageCallback on_message) {
                     std::cerr << "[ERROR] Read error: " << ec.message() << std::endl;
                 }
                 connected_ = false;
-                break;
+                continue;
             }
 
             last_msg = std::chrono::steady_clock::now();
 
-            // Zero-copy: pass raw beast buffer pointer directly, no string allocation
             auto buf_data = buffer_.data();
             const char* raw_ptr = static_cast<const char*>(buf_data.data());
             size_t raw_len = buf_data.size();
@@ -206,15 +222,6 @@ void WebSocketClient::run(MessageCallback on_message) {
         } catch (const std::exception& e) {
             std::cerr << "[ERROR] " << e.what() << std::endl;
             connected_ = false;
-            break;
-        }
-    }
-
-    // If we disconnected but still running, attempt reconnect
-    if (running_ && !connected_) {
-        std::cerr << "[RECONNECT] Attempting reconnection...\n";
-        if (connect()) {
-            run(on_message);  // Recursive — will re-enter the loop
         }
     }
 }
