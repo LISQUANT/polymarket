@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
+
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
+
 project(polymarket_arb_detector LANGUAGES CXX)
 
 include(CheckIPOSupported)
@@ -6,32 +11,85 @@ include(CheckIPOSupported)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Try system Boost first, fall back to anaconda for local dev
-find_package(Boost 1.70 QUIET COMPONENTS system)
-if(Boost_FOUND)
-    message(STATUS "Using system Boost: ${Boost_INCLUDE_DIRS}")
-    include_directories(${Boost_INCLUDE_DIRS})
-else()
-    # Local dev: anaconda Boost headers (beast is header-only)
-    set(ANACONDA_ROOT "$ENV{HOME}/anaconda3")
-    if(EXISTS "${ANACONDA_ROOT}/include/boost/beast.hpp")
-        message(STATUS "Using Anaconda Boost: ${ANACONDA_ROOT}/include")
-        include_directories(${ANACONDA_ROOT}/include)
-    else()
-        message(FATAL_ERROR "Boost not found. Install libboost-dev or set ANACONDA_ROOT.")
+option(PM_ALLOW_CONDA_BOOST "Allow Boost headers from Conda/Anaconda installs" ON)
+set(PM_ALLOCATOR "system" CACHE STRING "Allocator override: system, mimalloc, jemalloc")
+set_property(CACHE PM_ALLOCATOR PROPERTY STRINGS system mimalloc jemalloc)
+
+set(_boost_system_include_candidates
+    /usr/include
+    /usr/local/include
+)
+
+set(_boost_conda_include_candidates)
+foreach(_conda_prefix IN ITEMS
+        "$ENV{CONDA_PREFIX}"
+        "$ENV{HOME}/anaconda3"
+        "$ENV{HOME}/miniconda3")
+    if(_conda_prefix AND EXISTS "${_conda_prefix}/include/boost/beast.hpp")
+        list(APPEND _boost_conda_include_candidates "${_conda_prefix}/include")
     endif()
+endforeach()
+list(REMOVE_DUPLICATES _boost_conda_include_candidates)
+
+find_path(BOOST_INCLUDE_DIR
+    NAMES boost/beast.hpp
+    PATHS ${_boost_system_include_candidates}
+    NO_DEFAULT_PATH
+)
+
+if(BOOST_INCLUDE_DIR)
+    message(STATUS "Using Boost headers: ${BOOST_INCLUDE_DIR}")
+elseif(PM_ALLOW_CONDA_BOOST)
+    list(LENGTH _boost_conda_include_candidates _conda_boost_candidate_count)
+    if(_conda_boost_candidate_count GREATER 0)
+        list(GET _boost_conda_include_candidates 0 BOOST_INCLUDE_DIR)
+        message(WARNING
+            "Using Conda Boost headers from ${BOOST_INCLUDE_DIR}. "
+            "This project uses Boost header-only and does not link libboost_*.")
+    endif()
+endif()
+
+if(NOT BOOST_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "Boost headers not found in system include paths. Install libboost-dev/libboost-system-dev, "
+        "or rerun CMake with -DPM_ALLOW_CONDA_BOOST=ON to allow a Conda Boost install.")
 endif()
 
 # Boost.System header-only mode
 add_definitions(-DBOOST_ERROR_CODE_HEADER_ONLY)
+add_definitions(-DBOOST_ALL_NO_LIB)
 
 include_directories(
+    ${BOOST_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/deps
     ${CMAKE_SOURCE_DIR}/src
 )
 
 # Find system OpenSSL
 find_package(OpenSSL REQUIRED)
+
+set(_pm_allocator_library)
+set(_pm_allocator_library_candidates
+    /usr/lib
+    /usr/local/lib
+    "$ENV{CONDA_PREFIX}/lib"
+    "$ENV{HOME}/anaconda3/lib"
+    "$ENV{HOME}/miniconda3/lib"
+)
+
+if(PM_ALLOCATOR STREQUAL "mimalloc")
+    find_library(_pm_allocator_library NAMES mimalloc PATHS ${_pm_allocator_library_candidates})
+    if(NOT _pm_allocator_library)
+        message(FATAL_ERROR "PM_ALLOCATOR=mimalloc requested but mimalloc was not found")
+    endif()
+elseif(PM_ALLOCATOR STREQUAL "jemalloc")
+    find_library(_pm_allocator_library NAMES jemalloc PATHS ${_pm_allocator_library_candidates})
+    if(NOT _pm_allocator_library)
+        message(FATAL_ERROR "PM_ALLOCATOR=jemalloc requested but jemalloc was not found")
+    endif()
+elseif(NOT PM_ALLOCATOR STREQUAL "system")
+    message(FATAL_ERROR "Unsupported PM_ALLOCATOR='${PM_ALLOCATOR}'")
+endif()
 
 # simdjson library — always optimized
 add_library(simdjson STATIC deps/simdjson.cpp)
@@ -47,7 +105,7 @@ add_executable(arb_detector
     src/orderbook.cpp
     src/arbitrage.cpp
     src/logger.cpp
-    src/gcc14_compat.cpp
+    src/market_metadata.cpp
 )
 
 # Always -O3 -march=native for the hot path
@@ -60,9 +118,15 @@ target_link_libraries(arb_detector
     pthread
 )
 
-# If system Boost has a library (some distros), link it
-if(Boost_FOUND AND Boost_LIBRARIES)
-    target_link_libraries(arb_detector ${Boost_LIBRARIES})
+if(PM_ALLOCATOR STREQUAL "mimalloc")
+    target_compile_definitions(arb_detector PRIVATE MI_MALLOC_OVERRIDE=1)
+    target_link_libraries(arb_detector ${_pm_allocator_library})
+    message(STATUS "Using allocator override: mimalloc (${_pm_allocator_library})")
+elseif(PM_ALLOCATOR STREQUAL "jemalloc")
+    target_link_libraries(arb_detector ${_pm_allocator_library})
+    message(STATUS "Using allocator override: jemalloc (${_pm_allocator_library})")
+else()
+    message(STATUS "Using allocator override: system")
 endif()
 
 check_ipo_supported(RESULT IPO_SUPPORTED OUTPUT IPO_ERROR)

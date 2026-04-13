@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # EC2 Setup Script for Polymarket Arbitrage Detector
 # Target: Amazon Linux 2023 / Ubuntu 22.04+ on z1d.3xlarge (eu-west-2b)
 #
@@ -6,7 +6,7 @@
 #   git clone <your-repo> && cd polymarket/cpp
 #   chmod +x deploy/setup_ec2.sh && ./deploy/setup_ec2.sh
 
-set -e
+set -euo pipefail
 
 echo "=== Polymarket Arb Detector — EC2 Setup ==="
 
@@ -33,7 +33,7 @@ fi
 
 echo "[2/5] Downloading simdjson..."
 mkdir -p deps
-if [ ! -f deps/simdjson.h ]; then
+if [ ! -f deps/simdjson.h ] || [ ! -f deps/simdjson.cpp ]; then
     curl -sL "https://raw.githubusercontent.com/simdjson/simdjson/master/singleheader/simdjson.h" -o deps/simdjson.h
     curl -sL "https://raw.githubusercontent.com/simdjson/simdjson/master/singleheader/simdjson.cpp" -o deps/simdjson.cpp
     echo "  Downloaded simdjson"
@@ -42,22 +42,14 @@ else
 fi
 
 echo "[3/5] Building (Release, -O3 -march=native)..."
-mkdir -p build && cd build
-
-# On EC2 with system packages, use the system CMakeLists
-# Override anaconda path since we don't have anaconda on EC2
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_FLAGS="-O3 -march=native -DNDEBUG" \
-      ..
-
-make -j$(nproc)
-cd ..
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPM_ALLOW_CONDA_BOOST=OFF
+cmake --build build -j"$(nproc)"
 
 echo "[4/5] Creating logs directory..."
 mkdir -p logs
 
 echo "[5/5] Verifying build..."
-./build/arb_detector --config config.json --help 2>/dev/null || true
+test -x ./build/arb_detector
 ldd ./build/arb_detector
 
 echo ""

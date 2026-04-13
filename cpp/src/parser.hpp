@@ -2,26 +2,32 @@
 
 #include "types.hpp"
 #include <simdjson.h>
-#include <string_view>
-#include <cstring>
 #include <cstdio>
+#include <cstring>
+#include <limits>
+#include <string_view>
 
-inline Price parse_price(std::string_view s) noexcept {
-    if (s.empty()) return 0;
+inline bool try_parse_price(std::string_view s, Price& out) noexcept {
+    out = 0;
+    if (s.empty()) return false;
 
     uint32_t whole = 0;
     uint32_t frac = 0;
     int frac_digits = 0;
     bool seen_dot = false;
+    bool seen_digit = false;
 
     for (char c : s) {
         if (c == '.') {
+            if (seen_dot) return false;
             seen_dot = true;
             continue;
         }
         const unsigned digit = static_cast<unsigned>(c - '0');
-        if (digit > 9) continue;
+        if (digit > 9) return false;
+        seen_digit = true;
         if (!seen_dot) {
+            if (whole > (std::numeric_limits<uint32_t>::max() - digit) / 10) return false;
             whole = whole * 10 + digit;
         } else if (frac_digits < 3) {
             frac = frac * 10 + digit;
@@ -29,36 +35,105 @@ inline Price parse_price(std::string_view s) noexcept {
         }
     }
 
+    if (!seen_digit) return false;
+
     while (frac_digits < 3) {
         frac *= 10;
         ++frac_digits;
     }
 
+    if (whole > PRICE_ONE / 1000) return false;
     const uint32_t value = whole * 1000 + frac;
-    return static_cast<Price>(value <= PRICE_ONE ? value : PRICE_ONE);
+    if (value > PRICE_ONE) return false;
+
+    out = static_cast<Price>(value);
+    return true;
+}
+
+inline Price parse_price(std::string_view s) noexcept {
+    Price out = 0;
+    return try_parse_price(s, out) ? out : 0;
+}
+
+inline bool try_parse_size(std::string_view s, Size& out) noexcept {
+    out = 0;
+    if (s.empty()) return false;
+
+    bool seen_digit = false;
+    bool seen_dot = false;
+    for (char c : s) {
+        if (c == '.') {
+            if (seen_dot) return false;
+            seen_dot = true;
+            continue;
+        }
+        const unsigned digit = static_cast<unsigned>(c - '0');
+        if (digit > 9) return false;
+        if (seen_dot) continue;
+        if (out > (std::numeric_limits<Size>::max() - digit) / 10) return false;
+        out = out * 10 + digit;
+        seen_digit = true;
+    }
+    return seen_digit;
 }
 
 inline Size parse_size(std::string_view s) noexcept {
-    Size value = 0;
+    Size out = 0;
+    return try_parse_size(s, out) ? out : 0;
+}
+
+inline bool try_parse_u64(std::string_view s, uint64_t& out) noexcept {
+    out = 0;
+    if (s.empty()) return false;
+
+    bool seen_digit = false;
     for (char c : s) {
-        if (c == '.') break;
         const unsigned digit = static_cast<unsigned>(c - '0');
-        if (digit <= 9) {
-            value = value * 10 + digit;
-        }
+        if (digit > 9) return false;
+        if (out > (std::numeric_limits<uint64_t>::max() - digit) / 10) return false;
+        out = out * 10 + digit;
+        seen_digit = true;
     }
-    return value;
+    return seen_digit;
 }
 
 inline uint64_t parse_u64(std::string_view s) noexcept {
-    uint64_t value = 0;
-    for (char c : s) {
-        const unsigned digit = static_cast<unsigned>(c - '0');
-        if (digit <= 9) {
-            value = value * 10 + digit;
+    uint64_t out = 0;
+    return try_parse_u64(s, out) ? out : 0;
+}
+
+inline bool parse_timestamp_field(simdjson::ondemand::object& obj, const char* field_name,
+                                  uint64_t& out) noexcept {
+    out = 0;
+
+    simdjson::ondemand::value value;
+    if (obj.find_field_unordered(field_name).get(value)) return false;
+
+    simdjson::ondemand::json_type type;
+    if (value.type().get(type)) return false;
+
+    if (type == simdjson::ondemand::json_type::number) {
+        uint64_t u64 = 0;
+        if (!value.get_uint64().get(u64)) {
+            out = u64;
+            return true;
         }
+
+        int64_t i64 = 0;
+        if (!value.get_int64().get(i64) && i64 >= 0) {
+            out = static_cast<uint64_t>(i64);
+            return true;
+        }
+        return false;
     }
-    return value;
+
+    if (type == simdjson::ondemand::json_type::string) {
+        std::string_view sv;
+        if (value.get_string().get(sv)) return false;
+        return try_parse_u64(sv, out);
+    }
+
+    return false;
 }
 
 enum class EventType {
@@ -104,7 +179,7 @@ struct ParsedBestBidAskEvent {
 
 class MessageParser {
 public:
-    static constexpr size_t kBufferCapacity = 256 * 1024;
+    static constexpr size_t kBufferCapacity = 1024 * 1024;
 
     MessageParser();
 
@@ -175,11 +250,7 @@ private:
             ParsedBookEvent ev;
             if (obj.find_field_unordered("asset_id").get_string().get(ev.asset_id)) return;
             if (obj.find_field_unordered("market").get_string().get(ev.market)) return;
-
-            std::string_view ts_str;
-            if (!obj.find_field_unordered("timestamp").get_string().get(ts_str)) {
-                ev.timestamp = parse_u64(ts_str);
-            }
+            parse_timestamp_field(obj, "timestamp", ev.timestamp);
             ev.valid = true;
             on_book(ev, obj);
             return;
@@ -191,19 +262,14 @@ private:
             if (obj.find_field_unordered("price").get_string().get(ev.price_str)) return;
             if (obj.find_field_unordered("side").get_string().get(ev.side)) return;
             if (obj.find_field_unordered("size").get_string().get(ev.size_str)) return;
-
-            std::string_view ts_str;
-            if (!obj.find_field_unordered("timestamp").get_string().get(ts_str)) {
-                ev.timestamp = parse_u64(ts_str);
-            }
+            parse_timestamp_field(obj, "timestamp", ev.timestamp);
             on_trade(ev);
             return;
         }
 
         if (event_type == "price_change") {
-            std::string_view ts_str;
-            const uint64_t timestamp =
-                !obj.find_field_unordered("timestamp").get_string().get(ts_str) ? parse_u64(ts_str) : 0;
+            uint64_t timestamp = 0;
+            parse_timestamp_field(obj, "timestamp", timestamp);
 
             simdjson::ondemand::array changes;
             if (obj.find_field_unordered("price_changes").get_array().get(changes)) return;
@@ -216,15 +282,19 @@ private:
                 std::string_view sv;
                 if (change.find_field_unordered("asset_id").get_string().get(ev.asset_id)) continue;
                 if (change.find_field_unordered("price").get_string().get(sv)) continue;
-                ev.price = parse_price(sv);
+                if (!try_parse_price(sv, ev.price)) continue;
                 if (change.find_field_unordered("size").get_string().get(sv)) continue;
-                ev.size = parse_size(sv);
+                if (!try_parse_size(sv, ev.size)) continue;
                 if (change.find_field_unordered("side").get_string().get(sv)) continue;
                 ev.is_bid = (sv == "BUY");
-                if (change.find_field_unordered("best_bid").get_string().get(sv)) continue;
-                ev.best_bid = parse_price(sv);
-                if (change.find_field_unordered("best_ask").get_string().get(sv)) continue;
-                ev.best_ask = parse_price(sv);
+
+                if (!change.find_field_unordered("best_bid").get_string().get(sv)) {
+                    try_parse_price(sv, ev.best_bid);
+                }
+                if (!change.find_field_unordered("best_ask").get_string().get(sv)) {
+                    try_parse_price(sv, ev.best_ask);
+                }
+
                 ev.timestamp = timestamp;
                 on_price_change(ev);
             }
@@ -236,12 +306,10 @@ private:
             std::string_view sv;
             if (obj.find_field_unordered("asset_id").get_string().get(ev.asset_id)) return;
             if (obj.find_field_unordered("best_bid").get_string().get(sv)) return;
-            ev.best_bid = parse_price(sv);
+            if (!try_parse_price(sv, ev.best_bid)) return;
             if (obj.find_field_unordered("best_ask").get_string().get(sv)) return;
-            ev.best_ask = parse_price(sv);
-            if (!obj.find_field_unordered("timestamp").get_string().get(sv)) {
-                ev.timestamp = parse_u64(sv);
-            }
+            if (!try_parse_price(sv, ev.best_ask)) return;
+            parse_timestamp_field(obj, "timestamp", ev.timestamp);
             on_best_bid_ask(ev);
         }
     }

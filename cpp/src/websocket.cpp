@@ -1,4 +1,5 @@
 #include "websocket.hpp"
+#include "parser.hpp"
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -10,7 +11,7 @@ WebSocketClient::WebSocketClient(const Config& config)
 {
     ssl_ctx_.set_default_verify_paths();
     ssl_ctx_.set_verify_mode(ssl::verify_peer);
-    buffer_.reserve(256 * 1024);
+    buffer_.reserve(MessageParser::kBufferCapacity);
 }
 
 WebSocketClient::~WebSocketClient() {
@@ -20,6 +21,7 @@ WebSocketClient::~WebSocketClient() {
 bool WebSocketClient::connect() {
     int delay = 1;
     while (running_) {
+        ++stats_.reconnect_cycles;
         if (do_connect() && do_subscribe()) {
             connected_ = true;
             return true;
@@ -38,6 +40,7 @@ bool WebSocketClient::connect() {
 
 bool WebSocketClient::do_connect() {
     try {
+        ++stats_.connect_attempts;
         NanoTime t_start = now_ns();
 
         // Reset the WebSocket stream (use beast::tcp_stream for timeout support)
@@ -94,6 +97,7 @@ bool WebSocketClient::do_connect() {
         printf("[PERF] Total connect: %.2fms (DNS=%.1f + TCP=%.1f + TLS=%.1f + WS=%.1f)\n",
                total_ms, dns_ms, tcp_ms, tls_ms, ws_ms);
         printf("[CONNECTED] WebSocket upgrade complete\n");
+        ++stats_.successful_connects;
 
         // Auto-respond to pings
         ws_->control_callback(
@@ -108,6 +112,7 @@ bool WebSocketClient::do_connect() {
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Connection failed: " << e.what() << std::endl;
         connected_ = false;
+        ++stats_.connect_failures;
         return false;
     }
 }
@@ -151,16 +156,25 @@ bool WebSocketClient::do_subscribe() {
 
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Subscribe failed: " << e.what() << std::endl;
+        ++stats_.subscribe_failures;
         return false;
     }
 }
 
-void WebSocketClient::run(MessageCallback on_message) {
+void WebSocketClient::run(MessageCallback on_message, StopCallback should_stop) {
     running_ = true;
     auto last_ping = std::chrono::steady_clock::now();
     auto last_msg = std::chrono::steady_clock::now();
+    const auto stop_requested = [&]() noexcept {
+        return should_stop && should_stop();
+    };
 
     while (running_) {
+        if (stop_requested()) {
+            stop();
+            break;
+        }
+
         if (!connected_) {
             std::cerr << "[RECONNECT] Attempting reconnection...\n";
             if (!connect()) {
@@ -174,7 +188,7 @@ void WebSocketClient::run(MessageCallback on_message) {
         }
 
         try {
-            beast::get_lowest_layer(*ws_).expires_after(std::chrono::seconds(5));
+            beast::get_lowest_layer(*ws_).expires_after(std::chrono::seconds(1));
 
             buffer_.clear();
             beast::error_code ec;
@@ -184,12 +198,19 @@ void WebSocketClient::run(MessageCallback on_message) {
 
             if (ec) {
                 if (ec == beast::error::timeout) {
+                    if (stop_requested()) {
+                        stop();
+                        break;
+                    }
+
                     auto now = std::chrono::steady_clock::now();
                     auto since_msg =
                         std::chrono::duration_cast<std::chrono::seconds>(now - last_msg).count();
 
-                    if (since_msg > 30) {
+                    ++stats_.timeout_polls;
+                    if (since_msg > config_.stale_feed_timeout_seconds) {
                         std::cerr << "[STALE] No message for " << since_msg << "s, reconnecting...\n";
+                        ++stats_.stale_reconnects;
                         connected_ = false;
                         continue;
                     }
@@ -205,11 +226,18 @@ void WebSocketClient::run(MessageCallback on_message) {
 
                 if (ec == websocket::error::closed) {
                     std::cout << "[CLOSED] WebSocket closed by server\n";
+                    ++stats_.closed_events;
                 } else {
                     std::cerr << "[ERROR] Read error: " << ec.message() << std::endl;
+                    ++stats_.read_errors;
                 }
                 connected_ = false;
                 continue;
+            }
+
+            if (stop_requested()) {
+                stop();
+                break;
             }
 
             last_msg = std::chrono::steady_clock::now();
@@ -221,6 +249,7 @@ void WebSocketClient::run(MessageCallback on_message) {
 
         } catch (const std::exception& e) {
             std::cerr << "[ERROR] " << e.what() << std::endl;
+            ++stats_.read_errors;
             connected_ = false;
         }
     }
@@ -229,6 +258,7 @@ void WebSocketClient::run(MessageCallback on_message) {
 void WebSocketClient::send_ping() {
     try {
         ws_->ping({});
+        ++stats_.ping_count;
     } catch (const std::exception& e) {
         std::cerr << "[PING ERROR] " << e.what() << std::endl;
     }

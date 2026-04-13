@@ -20,10 +20,24 @@ namespace net = boost::asio;
 namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 
+struct WebSocketClientStats {
+    uint64_t connect_attempts = 0;
+    uint64_t successful_connects = 0;
+    uint64_t reconnect_cycles = 0;
+    uint64_t connect_failures = 0;
+    uint64_t subscribe_failures = 0;
+    uint64_t stale_reconnects = 0;
+    uint64_t timeout_polls = 0;
+    uint64_t read_errors = 0;
+    uint64_t closed_events = 0;
+    uint64_t ping_count = 0;
+};
+
 class WebSocketClient {
 public:
     // Zero-copy callback: raw pointer + length from beast buffer, no std::string
     using MessageCallback = std::function<void(const char* data, size_t len, NanoTime recv_time)>;
+    using StopCallback = std::function<bool()>;
 
     explicit WebSocketClient(const Config& config);
     ~WebSocketClient();
@@ -32,12 +46,13 @@ public:
     bool connect();
 
     // Start reading messages (blocks until disconnect or error)
-    void run(MessageCallback on_message);
+    void run(MessageCallback on_message, StopCallback should_stop = {});
 
     // Graceful shutdown
     void stop();
 
     bool is_connected() const { return connected_; }
+    WebSocketClientStats stats() const { return stats_; }
 
 private:
     const Config& config_;
@@ -47,6 +62,7 @@ private:
     beast::flat_buffer buffer_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> running_{false};
+    WebSocketClientStats stats_{};
 
     bool do_connect();
     bool do_subscribe();

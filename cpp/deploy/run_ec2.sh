@@ -8,6 +8,8 @@ LOG_DIR="${ROOT_DIR}/logs"
 CONFIG_PATH="${1:-${ROOT_DIR}/config.json}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 JOBS="${JOBS:-$(nproc)}"
+ALLOW_CONDA_BOOST="${PM_ALLOW_CONDA_BOOST:-ON}"
+ALLOCATOR="${PM_ALLOCATOR:-system}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "[run] config not found: ${CONFIG_PATH}" >&2
@@ -18,7 +20,10 @@ mkdir -p "${LOG_DIR}"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo "[run] building (${BUILD_TYPE})"
-    cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+    cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+        -DPM_ALLOW_CONDA_BOOST="${ALLOW_CONDA_BOOST}" \
+        -DPM_ALLOCATOR="${ALLOCATOR}"
     cmake --build "${BUILD_DIR}" -j"${JOBS}"
 fi
 
